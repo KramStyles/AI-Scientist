@@ -1,13 +1,14 @@
 import argparse
+import json
 import os
 import os.path as osp
+import re
 import shutil
 import subprocess
 from typing import Optional, Tuple
+
 from ai_scientist.generate_ideas import search_for_papers
-from ai_scientist.llm import get_response_from_llm, extract_json_between_markers
-import re
-import json
+from ai_scientist.llm import get_response_from_llm, extract_json_between_markers, create_client, AVAILABLE_LLMS
 
 
 # GENERATE LATEX
@@ -226,7 +227,8 @@ Feel free to add more cites to a particular point if there is only one or two re
 Ensure no paper is cited without a corresponding reference in the `references.bib` file.
 Ensure each paragraph of the related work has sufficient background, e.g. a few papers cited.
 You will be given access to the Semantic Scholar API, only add citations that you have found using the API.
-Add at least 5 new cites!
+Aim to discuss a broad range of relevant papers, not just the most popular ones.
+Make sure not to copy verbatim from prior literature to avoid plagiarism.
 
 You will be prompted to give a precise description of where and how to add the cite, and a search query for the paper to be cited.
 Finally, you will select the most relevant cite from the search results (top 10 results will be shown).
@@ -255,7 +257,7 @@ RESPONSE:
 ```
 
 In <THOUGHT>, first briefly reason over the paper and identify where citations should be added.
-If there are more citations needed, add "No more citations needed" to your thoughts.
+If no more citations are needed, add "No more citations needed" to your thoughts.
 Do not add "No more citations needed" if you are adding citations this round.
 
 In <JSON>, respond in JSON format with the following fields:
@@ -292,7 +294,7 @@ This JSON will be automatically parsed, so ensure the format is precise."""
 
 
 def get_citation_aider_prompt(
-    client, model, draft, current_round, total_rounds
+        client, model, draft, current_round, total_rounds
 ) -> Tuple[Optional[str], bool]:
     msg_history = []
     try:
@@ -389,15 +391,15 @@ Make sure that any citation precisely matches the name in `references.bib`. Chan
 Ensure the citation is well-integrated into the text.'''
 
     aider_prompt = (
-        aider_format.format(bibtex=bibtex_string, description=desc)
-        + """\n You must use \cite or \citet to reference papers, do not manually type out author names."""
+            aider_format.format(bibtex=bibtex_string, description=desc)
+            + """\n You must use \cite or \citet to reference papers, do not manually type out author names."""
     )
     return aider_prompt, False
 
 
 # PERFORM WRITEUP
 def perform_writeup(
-    idea, folder_name, coder, cite_client, cite_model, num_cite_rounds=20
+        idea, folder_name, coder, cite_client, cite_model, num_cite_rounds=20
 ):
     # CURRENTLY ASSUMES LATEX
     abstract_prompt = f"""We've provided the `latex/template.tex` file to the project. We will be filling it in section by section.
@@ -523,72 +525,11 @@ if __name__ == "__main__":
         "--model",
         type=str,
         default="gpt-4o-2024-05-13",
-        choices=[
-            "claude-3-5-sonnet-20240620",
-            "gpt-4o-2024-05-13",
-            "deepseek-coder-v2-0724",
-            "llama3.1-405b",
-            # Anthropic Claude models via Amazon Bedrock
-            "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
-            "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
-            "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
-            "bedrock/anthropic.claude-3-opus-20240229-v1:0"
-            # Anthropic Claude models Vertex AI
-            "vertex_ai/claude-3-opus@20240229",
-            "vertex_ai/claude-3-5-sonnet@20240620",
-            "vertex_ai/claude-3-sonnet@20240229",
-            "vertex_ai/claude-3-haiku@20240307"
-        ],
+        choices=AVAILABLE_LLMS,
         help="Model to use for AI Scientist.",
     )
     args = parser.parse_args()
-    if args.model == "claude-3-5-sonnet-20240620":
-        import anthropic
-
-        print(f"Using Anthropic API with model {args.model}.")
-        client_model = "claude-3-5-sonnet-20240620"
-        client = anthropic.Anthropic()
-    elif args.model.startswith("bedrock") and "claude" in args.model:
-        import anthropic
-
-        # Expects: bedrock/<MODEL_ID>
-        client_model = args.model.split("/")[-1]
-
-        print(f"Using Amazon Bedrock with model {client_model}.")
-        client = anthropic.AnthropicBedrock()
-    elif args.model.startswith("vertex_ai") and "claude" in args.model:
-        import anthropic
-
-        # Expects: vertex_ai/<MODEL_ID>
-        client_model = args.model.split("/")[-1]
-
-        print(f"Using Vertex AI with model {client_model}.")
-        client = anthropic.AnthropicVertex()
-    elif args.model == "gpt-4o-2024-05-13":
-        import openai
-
-        print(f"Using OpenAI API with model {args.model}.")
-        client_model = "gpt-4o-2024-05-13"
-        client = openai.OpenAI()
-    elif args.model == "deepseek-coder-v2-0724":
-        import openai
-
-        print(f"Using OpenAI API with {args.model}.")
-        client_model = "deepseek-coder-v2-0724"
-        client = openai.OpenAI(
-            api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com"
-        )
-    elif args.model == "llama3.1-405b":
-        import openai
-
-        print(f"Using OpenAI API with {args.model}.")
-        client_model = "meta-llama/llama-3.1-405b-instruct"
-        client = openai.OpenAI(
-            api_key=os.environ["OPENROUTER_API_KEY"],
-            base_url="https://openrouter.ai/api/v1",
-        )
-    else:
-        raise ValueError(f"Model {args.model} not recognized.")
+    client, client_model = create_client(args.model)
     print("Make sure you cleaned the Aider logs if re-generating the writeup!")
     folder_name = args.folder
     idea_name = osp.basename(folder_name)
